@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Smart Plant Care Dashboard</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+body{font-family:system-ui,sans-serif;background:#f3f7f2;margin:0;color:#1d2b1f}
+header{background:#2e7d32;color:#fff;padding:12px 20px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+header h1{font-size:1.2rem;margin:0;flex:1}main{padding:16px;max-width:1100px;margin:auto}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+.card{background:#fff;border-radius:10px;padding:14px;box-shadow:0 1px 3px #0002}
+.card small{color:#667}.card b{display:block;font-size:1.6rem;margin-top:4px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px;margin-top:12px}
+.ok{color:#2e7d32}.bad{color:#c62828}button{padding:8px 14px;border:0;border-radius:6px;background:#2e7d32;color:#fff;cursor:pointer}
+button.sm{padding:3px 8px;font-size:.8rem}input,select{padding:6px;border-radius:6px;border:1px solid #bbb}
+table{width:100%;border-collapse:collapse;font-size:.85rem}td,th{padding:4px;border-bottom:1px solid #eee;text-align:left}
+.CRITICAL{color:#c62828;font-weight:600}.WARNING{color:#ef6c00;font-weight:600}
+</style></head><body>
+<header><h1>🌱 Cloud Smart Plant Care</h1>
+<select id="dev"></select> API key <input id="key" value="dev-key" size="10" type="password"></header>
+<main>
+<div class="cards">
+<div class="card"><small>Plant</small><b id="plant">-</b></div>
+<div class="card"><small>Soil Moisture</small><b id="m">-</b></div>
+<div class="card"><small>Temperature</small><b id="t">-</b></div>
+<div class="card"><small>Humidity</small><b id="h">-</b></div>
+<div class="card"><small>Light</small><b id="l">-</b></div>
+<div class="card"><small>Pump</small><b id="pump">-</b></div>
+<div class="card"><small>Plant Status</small><b id="health">-</b></div>
+<div class="card"><small>Device / Last watered</small><b id="dstat" style="font-size:1rem">-</b><small id="lw"></small></div>
+</div>
+<div class="card" style="margin-top:12px">
+<button onclick="water()">💧 Manual Water</button>
+&nbsp; <label><input type="checkbox" id="auto" onchange="save()"> Auto water</label>
+&nbsp; Threshold % <input id="th" type="number" min="0" max="100" style="width:70px">
+<button class="sm" onclick="save()">Save</button> <span id="msg"></span></div>
+<div class="grid">
+<div class="card"><canvas id="c1"></canvas></div><div class="card"><canvas id="c2"></canvas></div>
+<div class="card"><canvas id="c3"></canvas></div>
+<div class="card"><b style="font-size:1rem">Watering history</b><table id="wh"></table></div>
+<div class="card"><b style="font-size:1rem">Alerts</b><table id="al"></table></div>
+<div class="card"><b style="font-size:1rem">Analytics</b><table id="an"></table></div>
+</div></main>
+<script>
+const $=id=>document.getElementById(id);
+const api=(p,o={})=>fetch(p,{...o,headers:{"X-API-Key":$("key").value,"Content-Type":"application/json"}}).then(r=>r.ok?r.json():Promise.reject(r.status));
+const mk=(id,label,color)=>new Chart($(id),{type:"line",data:{labels:[],datasets:[{label,data:[],borderColor:color,tension:.3,pointRadius:0}]},options:{animation:false}});
+const charts=[mk("c1","Soil Moisture %","#2e7d32"),mk("c2","Temperature °C","#ef6c00"),mk("c3","Humidity %","#1565c0")];
+let editing=false;$("th").onfocus=()=>editing=true;
+async function refresh(){
+ try{
+  const devs=await api("/api/devices");const sel=$("dev");
+  if(sel.options.length!==devs.length){sel.innerHTML=devs.map(d=>`<option>${d.device_id}</option>`).join("")}
+  if(!devs.length){$("msg").textContent="No devices yet - start the simulator.";return}
+  const id=sel.value||devs[0].device_id,d=devs.find(x=>x.device_id===id);
+  $("plant").textContent=d.plant_name;$("pump").textContent=d.pump;$("dstat").textContent=d.status;
+  $("lw").textContent=d.last_watered?" "+new Date(d.last_watered).toLocaleTimeString():" never";
+  $("auto").checked=d.auto_water;if(!editing)$("th").value=d.moisture_threshold;
+  const hist=await api(`/api/devices/${id}/history?limit=60`);
+  if(hist.length){const r=hist[hist.length-1];
+   $("m").textContent=r.soil_moisture+"%";$("t").textContent=r.temperature+"°C";$("h").textContent=r.humidity+"%";$("l").textContent=(r.light_level??"-")+"%";
+   const ok=r.soil_moisture>=d.moisture_threshold;$("health").textContent=ok?"Healthy":"Needs Water";$("health").className=ok?"ok":"bad"}
+  const lb=hist.map(r=>new Date(r.timestamp).toLocaleTimeString());
+  [["soil_moisture"],["temperature"],["humidity"]].forEach(([k],i)=>{charts[i].data.labels=lb;charts[i].data.datasets[0].data=hist.map(r=>r[k]);charts[i].update()});
+  const wh=await api(`/api/devices/${id}/watering-history`);
+  $("wh").innerHTML="<tr><th>Time</th><th>Trigger</th><th>Before</th><th>After</th><th>Sec</th></tr>"+wh.map(w=>`<tr><td>${new Date(w.timestamp).toLocaleTimeString()}</td><td>${w.trigger_type}</td><td>${w.moisture_before??"-"}</td><td>${w.moisture_after??"running"}</td><td>${Math.round(w.duration)}</td></tr>`).join("");
+  const al=await api("/api/alerts");
+  $("al").innerHTML=al.slice(0,8).map(a=>`<tr><td class="${a.level}">${a.level}</td><td>${a.message}</td><td>${a.status}${a.status==="open"?` <button class="sm" onclick="ack(${a.alert_id})">Ack</button>`:""}</td></tr>`).join("");
+  const an=await api(`/api/devices/${id}/analytics`);
+  $("an").innerHTML=Object.entries(an).map(([k,v])=>`<tr><td>${k.replace(/_/g," ")}</td><td>${v}</td></tr>`).join("");
+ }catch(e){$("msg").textContent="API error: "+e}
+}
+const cur=()=>$("dev").value;
+async function water(){try{await api(`/api/devices/${cur()}/water`,{method:"POST"});$("msg").textContent="Pump started"}catch(e){$("msg").textContent="Could not water: "+e}refresh()}
+async function save(){await api(`/api/devices/${cur()}/threshold`,{method:"PUT",body:JSON.stringify({moisture_threshold:+$("th").value,auto_water:$("auto").checked})});editing=false;$("msg").textContent="Saved";refresh()}
+async function ack(i){await api(`/api/alerts/${i}/acknowledge`,{method:"PUT"});refresh()}
+$("dev").onchange=refresh;refresh();setInterval(refresh,3000);
+</script></body></html>
